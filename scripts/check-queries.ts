@@ -85,7 +85,7 @@ async function main() {
   );
 
   heading("FLAGSHIP: path to become a Machine Learning Engineer (demo learner)");
-  const rolePath = await q.getPathToRole("Machine Learning Engineer", DEMO_KNOWN);
+  const rolePath = (await q.getPathToRole("Machine Learning Engineer", DEMO_KNOWN)) ?? [];
   console.table(
     rolePath.map((s, i) => ({
       "#": i + 1,
@@ -100,7 +100,7 @@ async function main() {
   console.log(`steps: ${rolePath.length}, total coursework: ${totalHours}h (typeof = ${typeof totalHours})`);
 
   heading("Path to a single skill: Computer Vision (demo learner)");
-  const skillPath = await q.getPathToSkill("Computer Vision", DEMO_KNOWN);
+  const skillPath = (await q.getPathToSkill("Computer Vision", DEMO_KNOWN)) ?? [];
   console.table(
     skillPath.map((s, i) => ({
       "#": i + 1,
@@ -114,7 +114,7 @@ async function main() {
   console.log(await q.getPathToSkill("HTML & CSS", DEMO_KNOWN));
 
   heading("Path with an empty known-set (cold start)");
-  const coldPath = await q.getPathToSkill("Deep Learning", []);
+  const coldPath = (await q.getPathToSkill("Deep Learning", [])) ?? [];
   console.log(`${coldPath.length} steps, first: ${coldPath[0]?.skill.name}, last: ${coldPath.at(-1)?.skill.name}`);
 
   heading("Courses the demo learner is ready for");

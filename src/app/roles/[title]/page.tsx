@@ -4,12 +4,15 @@ import { getRoleNeeds, getRoles } from "@/lib/queries";
 import { DatabaseUnavailableError } from "@/lib/neo4j";
 import { ErrorState } from "@/components/StateViews";
 import { RolePathPanel } from "@/components/RolePathPanel";
+import { decodeRouteParam } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 
 export default async function RoleDetailPage({ params }: PageProps<"/roles/[title]">) {
+  // Page params arrive percent-encoded; decodeRouteParam also survives a title
+  // containing a literal '%', which would otherwise throw an unhandled URIError.
   const { title: rawTitle } = await params;
-  const title = decodeURIComponent(rawTitle);
+  const title = decodeRouteParam(rawTitle);
 
   let needs: Awaited<ReturnType<typeof getRoleNeeds>> = null;
   let roles: Awaited<ReturnType<typeof getRoles>> = [];

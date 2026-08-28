@@ -18,7 +18,10 @@ export async function POST(request: NextRequest) {
   }
 
   return withErrorHandling(async () => {
-    await setSkillKnown(email, learnerName, skillName, known);
+    const applied = await setSkillKnown(email, learnerName, skillName, known);
+    if (!applied) {
+      throw Object.assign(new Error(`No skill named "${skillName}" was found.`), { status: 404 });
+    }
     return { email, knownSkills: await getKnownSkillNames(email) };
   });
 }

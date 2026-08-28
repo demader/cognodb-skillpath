@@ -6,13 +6,16 @@ import { ErrorState } from "@/components/StateViews";
 import { LevelBadge } from "@/components/LevelBadge";
 import { KnowToggle } from "@/components/KnowToggle";
 import { PrerequisiteChain } from "@/components/PrerequisiteChain";
+import { decodeRouteParam } from "@/lib/route-params";
 import type { Course, RelatedSkill } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function SkillDetailPage({ params }: PageProps<"/skills/[name]">) {
+  // Page params arrive percent-encoded; decodeRouteParam also survives a name
+  // containing a literal '%', which would otherwise throw an unhandled URIError.
   const { name: rawName } = await params;
-  const name = decodeURIComponent(rawName);
+  const name = decodeRouteParam(rawName);
 
   let detail: Awaited<ReturnType<typeof getSkillDetail>> = null;
   let chain: Awaited<ReturnType<typeof getPrerequisiteChain>> = [];

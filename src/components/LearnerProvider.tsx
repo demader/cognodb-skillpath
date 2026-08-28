@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -49,6 +50,8 @@ export function LearnerProvider({ children }: { children: ReactNode }) {
   const [targetRole, setTargetRoleState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
+  /** Monotonic counter identifying the most recent skill write. */
+  const writeTicket = useRef(0);
 
   const fetchState = useCallback(async (email: string) => {
     try {
@@ -90,14 +93,23 @@ export function LearnerProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(NAME_KEY, newName);
   }, []);
 
-  /** Optimistic toggle: update the UI immediately, then persist the KNOWS edge. */
+  /**
+   * Optimistic toggle: update the UI immediately, then persist the KNOWS edge.
+   *
+   * Clicks can overlap, and each response carries the learner's *whole* skill set
+   * as the server saw it. Applying a stale response would drop a skill that a
+   * later click had already added, so responses are only accepted while they are
+   * still the most recent write in flight.
+   */
   const toggleSkillKnown = useCallback(
     async (skillName: string, known: boolean) => {
       if (!identity) return;
-      const previous = knownSkills;
+
+      const ticket = ++writeTicket.current;
       setKnownSkills((prev) =>
         known ? [...new Set([...prev, skillName])] : prev.filter((s) => s !== skillName)
       );
+
       try {
         const res = await fetch("/api/learner/skills", {
           method: "POST",
@@ -106,14 +118,21 @@ export function LearnerProvider({ children }: { children: ReactNode }) {
         });
         if (!res.ok) throw new Error("write failed");
         const data = await res.json();
+        // A newer toggle has since been issued; its response is the truth.
+        if (ticket !== writeTicket.current) return;
         setKnownSkills(data.knownSkills ?? []);
         setOffline(false);
       } catch {
-        setKnownSkills(previous); // roll back so the UI never lies about saved state
         setOffline(true);
+        // Undo only this toggle rather than restoring a whole snapshot, which
+        // would also revert unrelated clicks made while this one was in flight.
+        if (ticket !== writeTicket.current) return;
+        setKnownSkills((prev) =>
+          known ? prev.filter((s) => s !== skillName) : [...new Set([...prev, skillName])]
+        );
       }
     },
-    [identity, knownSkills]
+    [identity]
   );
 
   const setTargetRole = useCallback(

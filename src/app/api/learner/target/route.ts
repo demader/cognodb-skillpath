@@ -18,7 +18,10 @@ export async function POST(request: NextRequest) {
   }
 
   return withErrorHandling(async () => {
-    await setTargetRole(email, learnerName, roleTitle);
+    const applied = await setTargetRole(email, learnerName, roleTitle);
+    if (!applied) {
+      throw Object.assign(new Error(`No role named "${roleTitle}" was found.`), { status: 404 });
+    }
     return { email, targetRole: await getTargetRole(email) };
   });
 }

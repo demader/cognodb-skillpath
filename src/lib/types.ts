@@ -58,9 +58,13 @@ export interface SkillDetail {
 
 /** An ancestor skill in a multi-hop prerequisite chain. */
 export interface ChainSkill extends Skill {
-  /** Fewest PREREQUISITE_OF hops between this skill and the target. */
+  /**
+   * Hops to the target along the shortest chain of the kind `blocking` describes:
+   * the shortest all-hard chain when one exists, otherwise the shortest chain of
+   * any kind. Depth and blocking always describe the same path.
+   */
   depth: number;
-  /** True when every hop on the shortest chain is a hard prerequisite. */
+  /** True when some chain to the target is a hard prerequisite the whole way. */
   blocking: boolean;
 }
 

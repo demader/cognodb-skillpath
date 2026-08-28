@@ -126,14 +126,18 @@ export async function getPrerequisiteChain(name: string): Promise<ChainSkill[]> 
   return read<ChainSkill>(
     `MATCH (target:Skill {name: $name})
      MATCH path = (ancestor:Skill)-[:PREREQUISITE_OF*1..${MAX_HOPS}]->(target)
-     // max() over a boolean is not ordered in CognoDB, so aggregate 0/1 instead:
-     // 1 means at least one of the paths to the target is hard the whole way.
+     // Both aggregates must describe the SAME path, or a row can pair the length of
+     // a recommended route with a blocking flag earned by a different, longer one.
+     // min() skips nulls, so hardDepth is the shortest all-hard route, or null if
+     // none exists — which is exactly the blocking test.
      WITH ancestor,
-          min(length(path)) AS depth,
-          max(CASE WHEN ALL(r IN relationships(path) WHERE r.strength = 'hard')
-                   THEN 1 ELSE 0 END) AS hardFlag
+          min(length(path)) AS anyDepth,
+          min(CASE WHEN ALL(r IN relationships(path) WHERE r.strength = 'hard')
+                   THEN length(path) END) AS hardDepth
      RETURN ancestor.name AS name, ancestor.level AS level,
-            ancestor.description AS description, depth, hardFlag = 1 AS blocking
+            ancestor.description AS description,
+            coalesce(hardDepth, anyDepth) AS depth,
+            hardDepth IS NOT NULL AS blocking
      ORDER BY depth ASC, name ASC`,
     { name }
   );
@@ -189,8 +193,10 @@ export async function getRoleReadiness(known: string[]): Promise<RoleReadiness[]
             size(coreHeld) AS coreKnown,
             size(nice) AS niceToHaveSkills,
             size(niceHeld) AS niceToHaveKnown,
+            // Must round the same way RolePathPanel does client-side, or the same
+            // role shows two different percentages on /profile and /roles/[title].
             CASE WHEN size(core) = 0 THEN 0
-                 ELSE toInteger(100.0 * size(coreHeld) / size(core)) END AS readiness,
+                 ELSE toInteger(round(100.0 * size(coreHeld) / size(core))) END AS readiness,
             [n IN core WHERE NOT n IN $known] AS missingCore
      ORDER BY readiness DESC, r.title ASC`,
     { known }
@@ -220,8 +226,8 @@ export async function getPathToRole(
   role: string,
   known: string[],
   includeNiceToHave = false
-): Promise<PathStep[]> {
-  return read<PathStep>(
+): Promise<PathStep[] | null> {
+  const rows = await read<PathStep>(
     `MATCH (role:Role {title: $role})-[need:NEEDS]->(goal:Skill)
      WHERE $includeNiceToHave OR need.importance = 'core'
 
@@ -229,11 +235,15 @@ export async function getPathToRole(
      MATCH path = (step:Skill)-[:PREREQUISITE_OF*0..${MAX_HOPS}]->(goal)
      WHERE ALL(r IN relationships(path) WHERE r.strength = 'hard')
        AND NOT step.name IN $known                                   // 3 — subtract known
-     WITH step, collect(DISTINCT goal.name) AS goals
+     WITH step,
+          collect(DISTINCT goal.name) AS goals,
+          // Tracked separately so the "role requirement" badge stays truthful when
+          // nice-to-have skills are folded into the traversal.
+          collect(DISTINCT CASE WHEN need.importance = 'core' THEN goal.name END) AS coreGoals
      // A step can be a goal skill itself (the 0-hop case); don't let it "unlock" itself.
      WITH step,
           [g IN goals WHERE g <> step.name] AS unlocks,
-          step.name IN goals AS isGoal
+          step.name IN [g IN coreGoals WHERE g IS NOT NULL] AS isGoal
 
      // 4a — how many of this step's own hard prerequisites are still missing?
      OPTIONAL MATCH ancestry = (anc:Skill)-[:PREREQUISITE_OF*1..${MAX_HOPS}]->(step)
@@ -262,14 +272,37 @@ export async function getPathToRole(
      ORDER BY unmetPrerequisites ASC, skill.name ASC`,
     { role, known, includeNiceToHave }
   );
+
+  // An empty result is ambiguous: the learner may be ready, or the role may not
+  // exist. Distinguish them so a typo'd target isn't reported as "you're done".
+  return rows.length > 0 || (await roleExists(role)) ? rows : null;
+}
+
+async function roleExists(title: string): Promise<boolean> {
+  const rows = await read<{ found: number }>(
+    "MATCH (r:Role {title: $title}) RETURN count(r) AS found",
+    { title }
+  );
+  return Boolean(rows[0]?.found);
+}
+
+async function skillExists(name: string): Promise<boolean> {
+  const rows = await read<{ found: number }>(
+    "MATCH (s:Skill {name: $name}) RETURN count(s) AS found",
+    { name }
+  );
+  return Boolean(rows[0]?.found);
 }
 
 /**
  * The same idea aimed at a single skill rather than a whole role: the ordered set
  * of prerequisites the learner is missing, each with the shortest course for it.
  */
-export async function getPathToSkill(target: string, known: string[]): Promise<PathStep[]> {
-  return read<PathStep>(
+export async function getPathToSkill(
+  target: string,
+  known: string[]
+): Promise<PathStep[] | null> {
+  const rows = await read<PathStep>(
     `MATCH (goal:Skill {name: $target})
      MATCH path = (step:Skill)-[:PREREQUISITE_OF*0..${MAX_HOPS}]->(goal)
      WHERE ALL(r IN relationships(path) WHERE r.strength = 'hard')
@@ -299,6 +332,8 @@ export async function getPathToSkill(target: string, known: string[]): Promise<P
      ORDER BY unmetPrerequisites ASC, skill.name ASC`,
     { target, known }
   );
+
+  return rows.length > 0 || (await skillExists(target)) ? rows : null;
 }
 
 /**
@@ -336,53 +371,68 @@ export async function getKnownSkillNames(email: string): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
+/**
+ * Adds or removes a KNOWS edge. Returns false when the skill doesn't exist, so the
+ * caller can answer 404 instead of a 200 that quietly changed nothing.
+ */
 export async function setSkillKnown(
   email: string,
   learnerName: string,
   skillName: string,
   known: boolean
-): Promise<void> {
+): Promise<boolean> {
   if (known) {
-    await write(
-      `MERGE (l:Learner {email: $email})
+    // The Skill is matched BEFORE the Learner is merged: an unknown skill name
+    // then ends the row stream without leaving an orphan Learner behind.
+    const rows = await write<{ name: string }>(
+      `MATCH (s:Skill {name: $skillName})
+       MERGE (l:Learner {email: $email})
          ON CREATE SET l.name = $learnerName
-       WITH l
-       MATCH (s:Skill {name: $skillName})
-       MERGE (l)-[:KNOWS]->(s)`,
+       MERGE (l)-[:KNOWS]->(s)
+       RETURN s.name AS name`,
       { email, learnerName, skillName }
     );
-  } else {
-    await write(
-      `MATCH (:Learner {email: $email})-[k:KNOWS]->(:Skill {name: $skillName})
-       DELETE k`,
-      { email, skillName }
-    );
+    return rows.length > 0;
   }
+
+  await write(
+    `MATCH (:Learner {email: $email})-[k:KNOWS]->(:Skill {name: $skillName})
+     DELETE k`,
+    { email, skillName }
+  );
+  return true;
 }
 
+/**
+ * Points the learner at a role, replacing any previous target. Returns false when
+ * the role doesn't exist.
+ */
 export async function setTargetRole(
   email: string,
   learnerName: string,
   roleTitle: string | null
-): Promise<void> {
+): Promise<boolean> {
   if (roleTitle) {
-    await write(
-      `MERGE (l:Learner {email: $email})
+    // The Role is matched FIRST. Deleting the old edge before confirming the new
+    // role exists would destroy a valid target on a typo'd request and still
+    // report success.
+    const rows = await write<{ title: string }>(
+      `MATCH (r:Role {title: $roleTitle})
+       MERGE (l:Learner {email: $email})
          ON CREATE SET l.name = $learnerName
-       WITH l
+       WITH l, r
        OPTIONAL MATCH (l)-[old:TARGETS]->(:Role)
        DELETE old
-       WITH l
-       MATCH (r:Role {title: $roleTitle})
-       MERGE (l)-[:TARGETS]->(r)`,
+       WITH l, r
+       MERGE (l)-[:TARGETS]->(r)
+       RETURN r.title AS title`,
       { email, learnerName, roleTitle }
     );
-  } else {
-    await write(
-      `MATCH (:Learner {email: $email})-[t:TARGETS]->(:Role) DELETE t`,
-      { email }
-    );
+    return rows.length > 0;
   }
+
+  await write("MATCH (:Learner {email: $email})-[t:TARGETS]->(:Role) DELETE t", { email });
+  return true;
 }
 
 export async function getTargetRole(email: string): Promise<string | null> {
@@ -413,12 +463,15 @@ export async function getGraphStats(): Promise<{
     relationships: number;
     totalHours: number;
   }>(
-    `MATCH (s:Skill) WITH count(s) AS skills
-     MATCH (c:Course) WITH skills, count(c) AS courses, sum(c.hours) AS totalHours
-     MATCH (r:Role) WITH skills, courses, totalHours, count(r) AS roles
-     MATCH (p:Provider) WITH skills, courses, totalHours, roles, count(p) AS providers
-     MATCH (cat:Category) WITH skills, courses, totalHours, roles, providers, count(cat) AS categories
-     MATCH ()-[rel]->()
+    // Every stage is an OPTIONAL MATCH on purpose: a plain MATCH that finds nothing
+    // ends the row stream, so a single empty label would collapse the whole result
+    // and the dashboard would report zero for every count, not just that one.
+    `OPTIONAL MATCH (s:Skill) WITH count(s) AS skills
+     OPTIONAL MATCH (c:Course) WITH skills, count(c) AS courses, coalesce(sum(c.hours), 0) AS totalHours
+     OPTIONAL MATCH (r:Role) WITH skills, courses, totalHours, count(r) AS roles
+     OPTIONAL MATCH (p:Provider) WITH skills, courses, totalHours, roles, count(p) AS providers
+     OPTIONAL MATCH (cat:Category) WITH skills, courses, totalHours, roles, providers, count(cat) AS categories
+     OPTIONAL MATCH ()-[rel]->()
      RETURN skills, courses, roles, providers, categories, totalHours,
             count(rel) AS relationships`
   );

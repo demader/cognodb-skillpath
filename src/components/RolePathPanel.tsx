@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useLearner } from "./LearnerProvider";
 import { LevelBadge } from "./LevelBadge";
@@ -19,39 +19,44 @@ export function RolePathPanel({ role, needs }: { role: string; needs: RoleNeed[]
   const [pathLoading, setPathLoading] = useState(true);
   const [includeNiceToHave, setIncludeNiceToHave] = useState(false);
 
-  const loadPath = useCallback(async () => {
-    setPathLoading(true);
-    try {
-      const res = await fetch("/api/path", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetType: "role",
-          target: role,
-          known: knownSkills,
-          includeNiceToHave,
-        }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Could not build a path.");
-      setPath(await res.json());
-      setPathError(null);
-    } catch (err) {
-      setPathError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setPathLoading(false);
-    }
-  }, [role, knownSkills, includeNiceToHave]);
-
   useEffect(() => {
     if (learnerLoading) return;
+
+    // Toggling the checkbox or a known skill re-fires this while a request is
+    // still open. The flag is read *after* each await so a superseded response
+    // can't overwrite a newer one.
     let cancelled = false;
+
     (async () => {
-      if (!cancelled) await loadPath();
+      setPathLoading(true);
+      try {
+        const res = await fetch("/api/path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targetType: "role",
+            target: role,
+            known: knownSkills,
+            includeNiceToHave,
+          }),
+        });
+        const payload = await res.json();
+        if (cancelled) return;
+        if (!res.ok) throw new Error(payload?.error ?? "Could not build a path.");
+        setPath(payload);
+        setPathError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setPathError(err instanceof Error ? err.message : "Something went wrong.");
+      } finally {
+        if (!cancelled) setPathLoading(false);
+      }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [loadPath, learnerLoading]);
+  }, [role, knownSkills, includeNiceToHave, learnerLoading]);
 
   const core = needs.filter((n) => n.importance === "core");
   const nice = needs.filter((n) => n.importance === "nice-to-have");

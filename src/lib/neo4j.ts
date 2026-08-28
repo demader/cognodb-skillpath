@@ -37,6 +37,22 @@ export class DatabaseUnavailableError extends Error {
   }
 }
 
+/**
+ * Distinguishes "the database is down" from "this query is wrong".
+ *
+ * Neo4jError codes are dotted strings like
+ * `Neo.ClientError.Statement.SyntaxError` (our bug) versus
+ * `ServiceUnavailable` / `SessionExpired` (an outage). Treating the first kind as
+ * an outage would hide real defects behind a friendly "try again later" and keep
+ * them out of the logs entirely.
+ */
+function isConnectivityFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code !== "string") return true; // no code at all — assume transport
+  if (code.startsWith("Neo.ClientError") || code.startsWith("Neo.DatabaseError")) return false;
+  return true;
+}
+
 async function withSession<T>(work: (session: Session) => Promise<T>): Promise<T> {
   let session: Session;
   try {
@@ -49,6 +65,7 @@ async function withSession<T>(work: (session: Session) => Promise<T>): Promise<T
     return await work(session);
   } catch (err) {
     if (err instanceof DatabaseUnavailableError) throw err;
+    if (!isConnectivityFailure(err)) throw err; // a real bug — let it surface as a 500
     throw new DatabaseUnavailableError(err);
   } finally {
     await session.close().catch(() => {});
