@@ -7,7 +7,7 @@ ordered sequence of steps between the two.
 Built for the Wexa AI take-home assignment, backed by **CognoDB** — a managed graph database
 speaking openCypher over Bolt — through the official `neo4j-driver`.
 
-- **Live demo:** _add your hosted URL here_
+- **Live demo:** **[cognodb-skillpath.vercel.app](https://cognodb-skillpath.vercel.app)** — running against a live CognoDB instance
 - **Screen recording:** _add your recording link here_
 
 ---
@@ -185,14 +185,33 @@ Relationships: KNOWS 7 · NEEDS 69 · OFFERED_BY 48 · PART_OF 48 ·
                PREREQUISITE_OF 78 · REQUIRES 63 · TARGETS 1 · TEACHES 58
 ```
 
-### 4. Deploy
+### 4. Test
+
+```bash
+npm test        # 70 specs — 19 pure data-integrity, 51 against the live graph
+npm run test:unit   # just the 19 that need no database
+```
+
+### 5. Deploy
+
+The live demo runs on Vercel, deployed from this repo:
+
+```bash
+npm i -g vercel
+vercel link
+vercel env add NEO4J_URI production        # repeat for USERNAME and PASSWORD
+vercel deploy --prod
+```
+
+Any Node host works (Render, Railway, Fly.io) — it needs the same three environment variables and
+nothing else. Every page that reads the graph is `force-dynamic`, so the deployment always reflects
+live data rather than a build-time snapshot.
+
+To run a production build locally instead:
 
 ```bash
 npm run build && npm run start
 ```
-
-Deploys to any Node host (Vercel, Render, Railway, Fly.io). Set the same three environment
-variables in the platform's dashboard.
 
 ---
 
