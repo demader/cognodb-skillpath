@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "check": "tsx scripts/check-queries.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

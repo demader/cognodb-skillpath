@@ -16,6 +16,11 @@ function getDriver(): Driver {
   }
 
   driver = neo4j.driver(uri, neo4j.auth.basic(user, password), {
+    // Bolt returns 64-bit integers as {low, high} objects by default, which would
+    // silently break arithmetic (hour totals, hop depths). Every integer in this
+    // dataset is well inside the safe JS range, so plain numbers are correct here.
+    disableLosslessIntegers: true,
+    // The free c0 tier allows 200 connections; stay well under it.
     maxConnectionPoolSize: 20,
     connectionAcquisitionTimeout: 10_000,
   });
